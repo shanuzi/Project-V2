@@ -8,8 +8,13 @@ $base_path = '../';
 
 $prog_id = $_GET['prog_id'] ?? '';
 if ($prog_id === '') { header('Location: select.php'); exit; }
+
 $msg  = $_GET['msg']  ?? '';
 $type = $_GET['type'] ?? 'success';
+
+
+$filter_year = isset($_GET['student_year']) && $_GET['student_year'] !== '' ? (int)$_GET['student_year'] : 0;
+
 $progStmt = $pdo->prepare("
     SELECT p.*, d.dept_short_name, s.school_short_name
     FROM programs p
@@ -21,12 +26,21 @@ $progStmt->execute([$prog_id]);
 $program = $progStmt->fetch();
 if (!$program) { header('Location: select.php?msg=Program+not+found.&type=error'); exit; }
 
-// Get students
-$stmt = $pdo->prepare("
-    SELECT * FROM students WHERE prog_id = ?
-    ORDER BY student_last_name, student_first_name ASC
-");
-$stmt->execute([$prog_id]);
+
+if ($filter_year > 0) {
+    $stmt = $pdo->prepare("
+        SELECT * FROM students
+        WHERE prog_id = ? AND student_year = ?
+        ORDER BY student_last_name, student_first_name ASC
+    ");
+    $stmt->execute([$prog_id, $filter_year]);
+} else {
+    $stmt = $pdo->prepare("
+        SELECT * FROM students WHERE prog_id = ?
+        ORDER BY student_last_name, student_first_name ASC
+    ");
+    $stmt->execute([$prog_id]);
+}
 $students = $stmt->fetchAll();
 $total = count($students);
 
@@ -52,6 +66,22 @@ include '../includes/header.php';
         <a href="create.php?prog_id=<?= urlencode($prog_id) ?>" class="btn btn-green">+ Add Student</a>
     <?php endif; ?>
     <a href="select.php" class="btn btn-outline">← Change Program</a>
+
+    <form method="GET" action="list.php" class="filter-bar">
+        <input type="hidden" name="prog_id" value="<?= htmlspecialchars($prog_id) ?>">
+        <label for="student_year">Filter by Year:</label>
+        <select id="student_year" name="student_year" onchange="this.form.submit()">
+            <option value="">— All Years —</option>
+            <?php for ($y = 1; $y <= 6; $y++): ?>
+                <option value="<?= $y ?>" <?= $filter_year === $y ? 'selected' : '' ?>>
+                    Year <?= $y ?>
+                </option>
+            <?php endfor; ?>
+        </select>
+        <?php if ($filter_year > 0): ?>
+            <a href="list.php?prog_id=<?= urlencode($prog_id) ?>" class="btn btn-outline btn-sm">✕ Clear</a>
+        <?php endif; ?>
+    </form>
 </div>
 
 <table class="data-table">
@@ -88,13 +118,16 @@ include '../includes/header.php';
         </tr>
         <?php endforeach; ?>
     <?php else: ?>
-        <tr><td colspan="6" style="text-align:center;color:var(--muted);">No students enrolled in this program.</td></tr>
+        <tr><td colspan="6" style="text-align:center;color:var(--muted);">
+            No students<?= $filter_year > 0 ? ' in Year ' . $filter_year : ' enrolled in this program' ?>.
+        </td></tr>
     <?php endif; ?>
     </tbody>
 </table>
 
 <div class="table-footer">
-    <span>Total of: <?= $total ?> student<?= $total !== 1 ? 's' : '' ?> enrolled</span>
+    <span>Total of: <?= $total ?> student<?= $total !== 1 ? 's' : '' ?>
+        <?= $filter_year > 0 ? ' in Year ' . $filter_year : ' enrolled' ?></span>
 </div>
 
-<?php include '../includes/footer.php'; ?>  
+<?php include '../includes/footer.php'; ?>
