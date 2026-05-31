@@ -12,23 +12,40 @@ $base_path = '../';
 $errors = [];
 $id = $_GET['student_id'] ?? $_POST['student_id'] ?? '';
 
-// Fetch academic programs to populate the dropdown selection menu
-try {
-    $programs = $pdo->query("
-        SELECT p.prog_id, p.prog_short_name, p.prog_full_name 
-        FROM programs p 
-        ORDER BY p.prog_short_name ASC
-    ")->fetchAll();
-} catch (PDOException $e) {
-    die('Database error: ' . $e->getMessage());
-}
-
 // Locate the existing student target entry record
 try {
     $stmt = $pdo->prepare("SELECT * FROM students WHERE student_id = ?");
     $stmt->execute([$id]);
     $data = $stmt->fetch();
     if (!$data) { header('Location: list.php?msg=Student+not+found.&type=error'); exit; }
+} catch (PDOException $e) { die('Database error: ' . $e->getMessage()); }
+
+// Fetch the student's current department via their current program
+try {
+    $deptStmt = $pdo->prepare("
+        SELECT p.dept_id, d.dept_full_name, d.dept_short_name
+        FROM programs p
+        JOIN departments d ON d.dept_id = p.dept_id
+        WHERE p.prog_id = ?
+    ");
+    $deptStmt->execute([$data['prog_id']]);
+    $currentDept = $deptStmt->fetch();
+
+    if (!$currentDept) {
+        die('Error: Could not resolve the department for this student\'s current program.');
+    }
+} catch (PDOException $e) { die('Database error: ' . $e->getMessage()); }
+
+// Fetch only the programs that belong to the student's current department
+try {
+    $progStmt = $pdo->prepare("
+        SELECT p.prog_id, p.prog_short_name, p.prog_full_name
+        FROM programs p
+        WHERE p.dept_id = ?
+        ORDER BY p.prog_short_name ASC
+    ");
+    $progStmt->execute([$currentDept['dept_id']]);
+    $programs = $progStmt->fetchAll();
 } catch (PDOException $e) { die('Database error: ' . $e->getMessage()); }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -41,29 +58,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     /* Validation */
     if ($data['student_first_name'] === '') { $errors[] = 'Student First Name is required.'; }
     if ($data['student_last_name'] === '')  { $errors[] = 'Student Last Name is required.'; }
-    
+
     // Check against standard CHECK constraint in DB (BETWEEN 1 AND 6)
     if ($data['student_year'] === '' || !ctype_digit($data['student_year']) || $data['student_year'] < 1 || $data['student_year'] > 6) {
         $errors[] = 'Student Year must be an integer between 1 and 6.';
     }
     if ($data['prog_id'] === '') { $errors[] = 'Please select an Academic Program.'; }
 
+    // Security: verify the submitted prog_id actually belongs to the student's department
+    if (!empty($data['prog_id'])) {
+        $allowed_ids = array_column($programs, 'prog_id');
+        if (!in_array($data['prog_id'], $allowed_ids)) {
+            $errors[] = 'The selected program does not belong to this student\'s department.';
+        }
+    }
+
     if (empty($errors)) {
         try {
             $stmt = $pdo->prepare("UPDATE students SET student_first_name=?, student_middle_name=?, student_last_name=?, student_year=?, prog_id=? WHERE student_id=?");
-            
+
             // Convert empty middle name inputs into explicit SQL NULL values
             $midName = $data['student_middle_name'] === '' ? null : $data['student_middle_name'];
-            
+
             $stmt->execute([
-                $data['student_first_name'], 
-                $midName, 
-                $data['student_last_name'], 
-                $data['student_year'], 
-                $data['prog_id'], 
+                $data['student_first_name'],
+                $midName,
+                $data['student_last_name'],
+                $data['student_year'],
+                $data['prog_id'],
                 $id
             ]);
-            
+
             header('Location: list.php?msg=Student+updated+successfully.&type=success');
             exit;
         } catch (PDOException $e) { $errors[] = 'Database error: ' . $e->getMessage(); }
@@ -128,6 +153,11 @@ include '../includes/header.php';
                 <?php endforeach; ?>
             </select>
         </div>
+
+        <!-- Informational note so the user knows why only some programs are shown -->
+        <p style="font-size:12px; color:var(--muted); margin-top:-8px; margin-bottom:14px;">
+            Only programs under <strong><?= htmlspecialchars($currentDept['dept_short_name'] . ' – ' . $currentDept['dept_full_name']) ?></strong> are available.
+        </p>
 
         <div class="form-actions">
             <button type="submit" class="btn btn-gray">Save Changes</button>

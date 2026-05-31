@@ -19,7 +19,7 @@ function is_active($keywords, $current) {
 </head>
 <body>
 
-// header
+
 <header class="top-header">
     <span class="brand">USJ-R School Management System V1.01</span>
     <div class="user-area">
