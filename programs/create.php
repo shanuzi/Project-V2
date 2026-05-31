@@ -1,5 +1,4 @@
 <?php
-
 require_once '../includes/auth.php';
 require_login('../');
 if (!can('Creator')) { header('Location: list.php'); exit; }
@@ -7,7 +6,7 @@ require_once '../config/db.php';
 
 $base_path = '../';
 $errors = [];
-$data = ['prog_id' => '', 'prog_full_name' => '', 'prog_short_name' => '', 'dept_id' => ''];
+$data = ['prog_full_name' => '', 'prog_short_name' => '', 'dept_id' => ''];
 
 $departments = $pdo->query("
     SELECT d.dept_id, d.dept_short_name, d.dept_full_name, s.school_short_name
@@ -15,28 +14,45 @@ $departments = $pdo->query("
     ORDER BY s.school_id, d.dept_id
 ")->fetchAll();
 
+// --- Generate preview prog_id based on selected department ---
+// Format: {dept_id} + 3-digit count of existing programs in that dept
+// e.g. dept 11001, 1st prog → 11001001, 2nd prog → 11001002
+$preview_id  = null;
+$selected_dept = $_POST['dept_id'] ?? $_GET['dept_id'] ?? '';
+if ($selected_dept !== '') {
+    $cntStmt = $pdo->prepare("SELECT COUNT(*) FROM programs WHERE dept_id = ?");
+    $cntStmt->execute([$selected_dept]);
+    $cnt = (int) $cntStmt->fetchColumn();
+    $preview_id = $selected_dept . str_pad($cnt + 1, 3, '0', STR_PAD_LEFT);
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $data['prog_id']         = trim($_POST['prog_id']         ?? '');
     $data['prog_full_name']  = trim($_POST['prog_full_name']  ?? '');
     $data['prog_short_name'] = trim($_POST['prog_short_name'] ?? '');
     $data['dept_id']         = trim($_POST['dept_id']         ?? '');
 
-    if ($data['prog_id'] === '' || !ctype_digit($data['prog_id']))
-        $errors[] = 'Program ID must be a positive integer.';
     if ($data['prog_full_name'] === '')  $errors[] = 'Program Full Name is required.';
     if ($data['prog_short_name'] === '') $errors[] = 'Program Short Name is required.';
     if ($data['dept_id'] === '')         $errors[] = 'Please select a Department.';
 
     if (empty($errors)) {
-        $chk = $pdo->prepare("SELECT prog_id FROM programs WHERE prog_id = ?");
-        $chk->execute([$data['prog_id']]);
-        if ($chk->fetch()) $errors[] = 'A program with that ID already exists.';
+        // Re-compute at save time to avoid race conditions
+        $cntStmt = $pdo->prepare("SELECT COUNT(*) FROM programs WHERE dept_id = ?");
+        $cntStmt->execute([$data['dept_id']]);
+        $cnt = (int) $cntStmt->fetchColumn();
+        $prog_id = (int) ($data['dept_id'] . str_pad($cnt + 1, 3, '0', STR_PAD_LEFT));
+
+        try {
+            $chk = $pdo->prepare("SELECT prog_id FROM programs WHERE prog_id = ?");
+            $chk->execute([$prog_id]);
+            if ($chk->fetch()) $errors[] = 'Generated Program ID already exists. Please try again.';
+        } catch (PDOException $e) { $errors[] = 'Database error: ' . $e->getMessage(); }
     }
 
     if (empty($errors)) {
         try {
             $stmt = $pdo->prepare("INSERT INTO programs (prog_id, prog_full_name, prog_short_name, dept_id) VALUES (?, ?, ?, ?)");
-            $stmt->execute([$data['prog_id'], $data['prog_full_name'], $data['prog_short_name'], $data['dept_id']]);
+            $stmt->execute([$prog_id, $data['prog_full_name'], $data['prog_short_name'], $data['dept_id']]);
             header('Location: list.php?msg=Program+added+successfully.&type=success');
             exit;
         } catch (PDOException $e) { $errors[] = 'Database error: ' . $e->getMessage(); }
@@ -55,10 +71,31 @@ include '../includes/header.php';
 <div class="form-card">
     <form method="POST" action="create.php">
 
+        <!-- Department must be selected first so the ID preview can generate -->
         <div class="form-row">
-            <label for="prog_id">Program ID:</label>
-            <input type="number" id="prog_id" name="prog_id"
-                   value="<?= htmlspecialchars($data['prog_id']) ?>" min="1">
+            <label for="dept_id">Department:</label>
+            <select id="dept_id" name="dept_id" onchange="this.form.submit()">
+                <option value="">-- Select Department --</option>
+                <?php foreach ($departments as $d): ?>
+                    <option value="<?= $d['dept_id'] ?>"
+                        <?= ($data['dept_id'] == $d['dept_id'] || $selected_dept == $d['dept_id']) ? 'selected' : '' ?>>
+                        <?= htmlspecialchars('[' . $d['school_short_name'] . '] ' . $d['dept_short_name'] . ' – ' . $d['dept_full_name']) ?>
+                    </option>
+                <?php endforeach; ?>
+            </select>
+        </div>
+
+        <!-- Auto-generated ID — read-only display -->
+        <div class="form-row">
+            <label>Program ID:</label>
+            <?php if ($preview_id !== null): ?>
+                <input type="text" value="<?= htmlspecialchars($preview_id) ?>" disabled
+                       style="background:#f4f6f8;color:var(--muted);cursor:not-allowed;font-weight:700;">
+                <span class="field-error" style="color:var(--muted);font-size:11px;">Auto-generated</span>
+            <?php else: ?>
+                <input type="text" value="— Select a department first —" disabled
+                       style="background:#f4f6f8;color:var(--muted);cursor:not-allowed;">
+            <?php endif; ?>
         </div>
 
         <div class="form-row">
@@ -71,19 +108,6 @@ include '../includes/header.php';
             <label for="prog_short_name">Program Short Name:</label>
             <input type="text" id="prog_short_name" name="prog_short_name"
                    value="<?= htmlspecialchars($data['prog_short_name']) ?>" maxlength="20">
-        </div>
-
-        <div class="form-row">
-            <label for="dept_id">Department:</label>
-            <select id="dept_id" name="dept_id">
-                <option value="">-- Select Department --</option>
-                <?php foreach ($departments as $d): ?>
-                    <option value="<?= $d['dept_id'] ?>"
-                        <?= $data['dept_id'] == $d['dept_id'] ? 'selected' : '' ?>>
-                        <?= htmlspecialchars('[' . $d['school_short_name'] . '] ' . $d['dept_short_name'] . ' – ' . $d['dept_full_name']) ?>
-                    </option>
-                <?php endforeach; ?>
-            </select>
         </div>
 
         <div class="form-actions">

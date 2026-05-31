@@ -9,17 +9,39 @@ $base_path = '../';
 $errors = [];
 $id = $_GET['id'] ?? $_POST['prog_id'] ?? '';
 
-$departments = $pdo->query("
-    SELECT d.dept_id, d.dept_short_name, d.dept_full_name, s.school_short_name
-    FROM departments d JOIN schools s ON s.school_id = d.school_id
-    ORDER BY s.school_id, d.dept_id
-")->fetchAll();
-
+// Fetch the program being edited
 try {
     $stmt = $pdo->prepare("SELECT * FROM programs WHERE prog_id = ?");
     $stmt->execute([$id]);
     $data = $stmt->fetch();
     if (!$data) { header('Location: list.php?msg=Program+not+found.&type=error'); exit; }
+} catch (PDOException $e) { die('Database error: ' . $e->getMessage()); }
+
+// Resolve the program's current school via its department
+// This is the school the department dropdown will be locked to
+try {
+    $schoolStmt = $pdo->prepare("
+        SELECT s.school_id, s.school_short_name, s.school_full_name
+        FROM departments d
+        JOIN schools s ON s.school_id = d.school_id
+        WHERE d.dept_id = ?
+    ");
+    $schoolStmt->execute([$data['dept_id']]);
+    $currentSchool = $schoolStmt->fetch();
+    if (!$currentSchool) { die('Error: Could not resolve school for this program.'); }
+} catch (PDOException $e) { die('Database error: ' . $e->getMessage()); }
+
+// Fetch only the departments that belong to the same school
+// Program can only move to a sibling department (same school)
+try {
+    $deptStmt = $pdo->prepare("
+        SELECT dept_id, dept_short_name, dept_full_name
+        FROM departments
+        WHERE school_id = ?
+        ORDER BY dept_id ASC
+    ");
+    $deptStmt->execute([$currentSchool['school_id']]);
+    $departments = $deptStmt->fetchAll();
 } catch (PDOException $e) { die('Database error: ' . $e->getMessage()); }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -30,6 +52,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($data['prog_full_name'] === '')  $errors[] = 'Program Full Name is required.';
     if ($data['prog_short_name'] === '') $errors[] = 'Program Short Name is required.';
     if ($data['dept_id'] === '')         $errors[] = 'Please select a Department.';
+
+    // Security: verify submitted dept_id actually belongs to the same school
+    if (!empty($data['dept_id'])) {
+        $allowed_dept_ids = array_column($departments, 'dept_id');
+        if (!in_array($data['dept_id'], $allowed_dept_ids)) {
+            $errors[] = 'The selected department does not belong to this program\'s school.';
+        }
+    }
 
     if (empty($errors)) {
         try {
@@ -71,6 +101,16 @@ include '../includes/header.php';
                    value="<?= htmlspecialchars($data['prog_short_name']) ?>" maxlength="20">
         </div>
 
+        <!-- School is locked — shown as read-only, not a free dropdown -->
+        <div class="form-row">
+            <label>School:</label>
+            <input type="text"
+                   value="<?= htmlspecialchars($currentSchool['school_short_name'] . ' – ' . $currentSchool['school_full_name']) ?>"
+                   disabled
+                   style="background:#f4f6f8;color:var(--muted);cursor:not-allowed;">
+        </div>
+
+        <!-- Department dropdown restricted to siblings in the same school -->
         <div class="form-row">
             <label for="dept_id">Department:</label>
             <select id="dept_id" name="dept_id">
@@ -78,7 +118,7 @@ include '../includes/header.php';
                 <?php foreach ($departments as $d): ?>
                     <option value="<?= $d['dept_id'] ?>"
                         <?= $data['dept_id'] == $d['dept_id'] ? 'selected' : '' ?>>
-                        <?= htmlspecialchars('[' . $d['school_short_name'] . '] ' . $d['dept_short_name'] . ' – ' . $d['dept_full_name']) ?>
+                        <?= htmlspecialchars($d['dept_short_name'] . ' – ' . $d['dept_full_name']) ?>
                     </option>
                 <?php endforeach; ?>
             </select>
