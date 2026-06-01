@@ -1,38 +1,46 @@
 <?php
 require_once '../includes/auth.php';
 require_login('../');
-if (!can('Creator')) { header('Location: list.php'); exit; }
+if (!can('Updater')) { header('Location: list.php'); exit; }
 require_once '../config/db.php';
+
 
 $base_path = '../';
 $errors = [];
+$id = $_GET['student_id'] ?? $_POST['student_id'] ?? '';
 
-$data = [
-    'student_first_name'  => '',
-    'student_middle_name' => '',
-    'student_last_name'   => '',
-    'student_year'        => '',
-    'prog_id'             => $_GET['prog_id'] ?? ''
-];
-
+// Fetch existing student record
 try {
-    $programs = $pdo->query("
+    $stmt = $pdo->prepare("SELECT * FROM students WHERE student_id = ?");
+    $stmt->execute([$id]);
+    $data = $stmt->fetch();
+    if (!$data) { header('Location: list.php?msg=Student+not+found.&type=error'); exit; }
+} catch (PDOException $e) { die('Database error: ' . $e->getMessage()); }
+
+// Resolve current department via student's program — locked
+try {
+    $deptStmt = $pdo->prepare("
+        SELECT p.dept_id, d.dept_full_name, d.dept_short_name
+        FROM programs p
+        JOIN departments d ON d.dept_id = p.dept_id
+        WHERE p.prog_id = ?
+    ");
+    $deptStmt->execute([$data['prog_id']]);
+    $currentDept = $deptStmt->fetch();
+    if (!$currentDept) { die('Error: Could not resolve the department for this student\'s current program.'); }
+} catch (PDOException $e) { die('Database error: ' . $e->getMessage()); }
+
+// Programs restricted to the student's current department
+try {
+    $progStmt = $pdo->prepare("
         SELECT p.prog_id, p.prog_short_name, p.prog_full_name
         FROM programs p
+        WHERE p.dept_id = ?
         ORDER BY p.prog_short_name ASC
-    ")->fetchAll();
-} catch (PDOException $e) {
-    $errors[] = 'Failed to load academic programs: ' . $e->getMessage();
-}
-
-// --- Generate next student_id ---
-// Format: {year}-{4-digit sequence}
-// Uses MAX of the numeric part to stay correct after deletions.
-// e.g. MAX is 2026-0003 → extract 0003 → next is 0004 → 2026-0004
-$year = date('Y');
-$maxStmt = $pdo->query("SELECT MAX(CAST(SUBSTRING(student_id, 6) AS UNSIGNED)) FROM students");
-$maxSeq  = (int) $maxStmt->fetchColumn(); // returns 0 if table is empty
-$student_id_preview = $year . '-' . str_pad($maxSeq + 1, 4, '0', STR_PAD_LEFT);
+    ");
+    $progStmt->execute([$currentDept['dept_id']]);
+    $programs = $progStmt->fetchAll();
+} catch (PDOException $e) { die('Database error: ' . $e->getMessage()); }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $data['student_first_name']  = trim($_POST['student_first_name']  ?? '');
@@ -41,88 +49,97 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $data['student_year']        = trim($_POST['student_year']        ?? '');
     $data['prog_id']             = trim($_POST['prog_id']             ?? '');
 
-    if ($data['student_first_name'] === '') $errors[] = 'Student First Name is required.';
-    if ($data['student_last_name']  === '') $errors[] = 'Student Last Name is required.';
-    if ($data['student_year'] === '' || !ctype_digit($data['student_year'])
-        || $data['student_year'] < 1 || $data['student_year'] > 6)
-        $errors[] = 'Student Year must be between 1 and 6.';
-    if ($data['prog_id'] === '' || !ctype_digit($data['prog_id']))
-        $errors[] = 'Please select a valid Program.';
+    // Name fields: letters, spaces, hyphens, apostrophes only — no numbers
+    if ($e = validate_person_name($data['student_first_name'], 'First Name', true))          $errors[] = $e;
+    if ($e = validate_person_name($data['student_middle_name'], 'Middle Name', false))       $errors[] = $e;
+    if ($e = validate_person_name($data['student_last_name'], 'Last Name', true))            $errors[] = $e;
+
+    // Year level: integer 1–6 only (also enforced via <select> on the UI)
+    if ($e = validate_integer_range($data['student_year'], 'Year Level', 1, 6))             $errors[] = $e;
+
+    if ($data['prog_id'] === '') {
+        $errors[] = 'Please select an Academic Program.';
+    } else {
+        // Security: submitted prog_id must belong to the student's locked department
+        $allowed_ids = array_column($programs, 'prog_id');
+        if (!in_array($data['prog_id'], $allowed_ids))
+            $errors[] = 'The selected program does not belong to this student\'s department.';
+    }
 
     if (empty($errors)) {
-        // Re-compute at save time using MAX to avoid race conditions and deletion gaps
-        $maxStmt = $pdo->query("SELECT MAX(CAST(SUBSTRING(student_id, 6) AS UNSIGNED)) FROM students");
-        $maxSeq  = (int) $maxStmt->fetchColumn();
-        $student_id = date('Y') . '-' . str_pad($maxSeq + 1, 4, '0', STR_PAD_LEFT);
-
         try {
-            $chk = $pdo->prepare("SELECT student_id FROM students WHERE student_id = ?");
-            $chk->execute([$student_id]);
-            if ($chk->fetch()) {
-                $errors[] = 'Generated Student ID already exists. Please try again.';
-            } else {
-                $midName = $data['student_middle_name'] === '' ? null : $data['student_middle_name'];
-                $stmt = $pdo->prepare("
-                    INSERT INTO students
-                        (student_id, student_first_name, student_middle_name, student_last_name, student_year, prog_id)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                ");
-                if ($stmt->execute([
-                    $student_id,
-                    $data['student_first_name'],
-                    $midName,
-                    $data['student_last_name'],
-                    $data['student_year'],
-                    $data['prog_id']
-                ])) {
-                    header('Location: list.php?prog_id=' . urlencode($data['prog_id']) . '&msg=Student+added+successfully.&type=success');
-                    exit;
-                }
-            }
-        } catch (PDOException $e) {
-            $errors[] = 'Database error: ' . $e->getMessage();
-        }
+            $midName = $data['student_middle_name'] === '' ? null : $data['student_middle_name'];
+            $stmt = $pdo->prepare("
+                UPDATE students
+                SET student_first_name=?, student_middle_name=?, student_last_name=?, student_year=?, prog_id=?
+                WHERE student_id=?
+            ");
+            $stmt->execute([
+                $data['student_first_name'],
+                $midName,
+                $data['student_last_name'],
+                $data['student_year'],
+                $data['prog_id'],
+                $id
+            ]);
+            header('Location: list.php?msg=Student+updated+successfully.&type=success');
+            exit;
+        } catch (PDOException $e) { $errors[] = 'Database error: ' . $e->getMessage(); }
     }
 }
 
 include '../includes/header.php';
 ?>
 
-<p class="page-title">Student Create</p>
+<p class="page-title">Student Update</p>
 
 <?php if ($errors): ?>
     <div class="alert alert-error"><?= implode('<br>', array_map('htmlspecialchars', $errors)) ?></div>
 <?php endif; ?>
 
 <div class="form-card">
-    <form method="POST" action="create.php<?= $data['prog_id'] !== '' ? '?prog_id=' . urlencode($data['prog_id']) : '' ?>">
+    <form method="POST" action="update.php">
+        <input type="hidden" name="student_id" value="<?= htmlspecialchars($data['student_id']) ?>">
 
-        <!-- Auto-generated student ID — read-only -->
         <div class="form-row">
             <label>Student ID:</label>
-            <input type="text" value="<?= htmlspecialchars($student_id_preview) ?>" disabled
-                   style="background:#f4f6f8;color:var(--muted);cursor:not-allowed;font-weight:700;">
-            <span class="field-error" style="color:var(--muted);font-size:11px;">Auto-generated</span>
+            <input type="text" value="<?= htmlspecialchars($data['student_id']) ?>" disabled
+                   style="background:#f4f6f8;color:var(--muted);cursor:not-allowed;">
         </div>
 
+        <!-- First name: letters, spaces, hyphens, apostrophes only -->
         <div class="form-row">
             <label for="student_first_name">First Name:</label>
             <input type="text" id="student_first_name" name="student_first_name"
-                   value="<?= htmlspecialchars($data['student_first_name']) ?>" maxlength="80" required>
+                   value="<?= htmlspecialchars($data['student_first_name']) ?>"
+                   maxlength="80"
+                   pattern="[a-zA-Z\s\-']+"
+                   title="Letters, spaces, hyphens, and apostrophes only — no numbers"
+                   required>
         </div>
 
+        <!-- Middle name: optional, same rules -->
         <div class="form-row">
             <label for="student_middle_name">Middle Name:</label>
             <input type="text" id="student_middle_name" name="student_middle_name"
-                   value="<?= htmlspecialchars($data['student_middle_name']) ?>" maxlength="80">
+                   value="<?= htmlspecialchars($data['student_middle_name'] ?? '') ?>"
+                   maxlength="80"
+                   pattern="[a-zA-Z\s\-']*"
+                   title="Letters, spaces, hyphens, and apostrophes only — no numbers">
         </div>
 
+        <!-- Last name: required, same rules -->
         <div class="form-row">
             <label for="student_last_name">Last Name:</label>
             <input type="text" id="student_last_name" name="student_last_name"
-                   value="<?= htmlspecialchars($data['student_last_name']) ?>" maxlength="80" required>
+                   value="<?= htmlspecialchars($data['student_last_name']) ?>"
+                   maxlength="80"
+                   pattern="[a-zA-Z\s\-']+"
+                   title="Letters, spaces, hyphens, and apostrophes only — no numbers"
+                   required>
         </div>
 
+        <!-- Year level: select only — no free text input, enforced 1-6 -->
         <div class="form-row">
             <label for="student_year">Year Level:</label>
             <select id="student_year" name="student_year" required>
@@ -133,24 +150,28 @@ include '../includes/header.php';
             </select>
         </div>
 
+        <!-- Program: restricted to current department -->
         <div class="form-row">
             <label for="prog_id">Academic Program:</label>
             <select id="prog_id" name="prog_id" required>
                 <option value="">-- Select Program --</option>
-                <?php foreach ($programs as $prog): ?>
-                    <option value="<?= $prog['prog_id'] ?>"
-                        <?= $data['prog_id'] == $prog['prog_id'] ? 'selected' : '' ?>>
-                        <?= htmlspecialchars($prog['prog_short_name'] . ' - ' . $prog['prog_full_name']) ?>
+                <?php foreach ($programs as $p): ?>
+                    <option value="<?= $p['prog_id'] ?>"
+                        <?= $data['prog_id'] == $p['prog_id'] ? 'selected' : '' ?>>
+                        <?= htmlspecialchars($p['prog_short_name'] . ' – ' . $p['prog_full_name']) ?>
                     </option>
                 <?php endforeach; ?>
             </select>
         </div>
 
+        <p style="font-size:12px;color:var(--muted);margin-top:-8px;margin-bottom:14px;">
+            Only programs under <strong><?= htmlspecialchars($currentDept['dept_short_name'] . ' – ' . $currentDept['dept_full_name']) ?></strong> are available.
+        </p>
+
         <div class="form-actions">
-            <button type="submit" class="btn btn-gray">Save New Student Entry</button>
-            <button type="reset"  class="btn btn-outline">Reset Form</button>
-            <a href="list.php<?= $data['prog_id'] !== '' ? '?prog_id=' . urlencode($data['prog_id']) : '' ?>"
-               class="btn btn-red">Exit</a>
+            <button type="submit" class="btn btn-gray">Save Changes</button>
+            <button type="reset"  class="btn btn-outline">Reset</button>
+            <a href="list.php"    class="btn btn-red">Cancel</a>
         </div>
     </form>
 </div>
