@@ -10,15 +10,26 @@ $data = ['dept_full_name' => '', 'dept_short_name' => '', 'school_id' => ''];
 
 $schools = $pdo->query("SELECT school_id, school_short_name, school_full_name FROM schools ORDER BY school_id")->fetchAll();
 
-// --- Generate preview dept_id based on selected school ---
+
+function next_dept_id(PDO $pdo, string $school_id): string {
+    $stmt = $pdo->prepare("SELECT MAX(dept_id) FROM departments WHERE school_id = ?");
+    $stmt->execute([$school_id]);
+    $max = $stmt->fetchColumn();
+    if ($max === null) {
+        // No departments yet for this school — start at 001
+        $next_seq = 1;
+    } else {
+        // Strip the school_id prefix to get the 3-digit sequence, then increment
+        $seq = (int) substr((string)$max, strlen($school_id));
+        $next_seq = $seq + 1;
+    }
+    return $school_id . str_pad($next_seq, 3, '0', STR_PAD_LEFT);
+}
 
 $preview_id = null;
 $selected_school = $_POST['school_id'] ?? $_GET['school_id'] ?? '';
 if ($selected_school !== '') {
-    $cntStmt = $pdo->prepare("SELECT COUNT(*) FROM departments WHERE school_id = ?");
-    $cntStmt->execute([$selected_school]);
-    $cnt = (int) $cntStmt->fetchColumn();
-    $preview_id = $selected_school . str_pad($cnt + 1, 3, '0', STR_PAD_LEFT);
+    $preview_id = next_dept_id($pdo, $selected_school);
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -31,11 +42,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($data['school_id'] === '')       $errors[] = 'Please select a School.';
 
     if (empty($errors)) {
-        // Re-compute the ID at save time to avoid race conditions
-        $cntStmt = $pdo->prepare("SELECT COUNT(*) FROM departments WHERE school_id = ?");
-        $cntStmt->execute([$data['school_id']]);
-        $cnt = (int) $cntStmt->fetchColumn();
-        $dept_id = (int) ($data['school_id'] . str_pad($cnt + 1, 3, '0', STR_PAD_LEFT));
+        // Re-compute at save time using MAX to avoid race conditions and deletion gaps
+        $dept_id = next_dept_id($pdo, $data['school_id']);
 
         try {
             $chk = $pdo->prepare("SELECT dept_id FROM departments WHERE dept_id = ?");

@@ -14,16 +14,27 @@ $departments = $pdo->query("
     ORDER BY s.school_id, d.dept_id
 ")->fetchAll();
 
-// --- Generate preview prog_id based on selected department ---
-// Format: {dept_id} + 3-digit count of existing programs in that dept
-// e.g. dept 11001, 1st prog → 11001001, 2nd prog → 11001002
+// --- Generate next prog_id based on selected department ---
+// Format: {dept_id} + 3-digit sequence
+// Uses MAX to stay correct even after deletions.
+// e.g. dept 11001: MAX is 11001003 → strip prefix 11001 → sequence 003 → next is 004 → 11001004
+function next_prog_id(PDO $pdo, string $dept_id): string {
+    $stmt = $pdo->prepare("SELECT MAX(prog_id) FROM programs WHERE dept_id = ?");
+    $stmt->execute([$dept_id]);
+    $max = $stmt->fetchColumn();
+    if ($max === null) {
+        $next_seq = 1;
+    } else {
+        $seq = (int) substr((string)$max, strlen($dept_id));
+        $next_seq = $seq + 1;
+    }
+    return $dept_id . str_pad($next_seq, 3, '0', STR_PAD_LEFT);
+}
+
 $preview_id  = null;
 $selected_dept = $_POST['dept_id'] ?? $_GET['dept_id'] ?? '';
 if ($selected_dept !== '') {
-    $cntStmt = $pdo->prepare("SELECT COUNT(*) FROM programs WHERE dept_id = ?");
-    $cntStmt->execute([$selected_dept]);
-    $cnt = (int) $cntStmt->fetchColumn();
-    $preview_id = $selected_dept . str_pad($cnt + 1, 3, '0', STR_PAD_LEFT);
+    $preview_id = next_prog_id($pdo, $selected_dept);
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -36,11 +47,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($data['dept_id'] === '')         $errors[] = 'Please select a Department.';
 
     if (empty($errors)) {
-        // Re-compute at save time to avoid race conditions
-        $cntStmt = $pdo->prepare("SELECT COUNT(*) FROM programs WHERE dept_id = ?");
-        $cntStmt->execute([$data['dept_id']]);
-        $cnt = (int) $cntStmt->fetchColumn();
-        $prog_id = (int) ($data['dept_id'] . str_pad($cnt + 1, 3, '0', STR_PAD_LEFT));
+        // Re-compute at save time using MAX to avoid race conditions and deletion gaps
+        $prog_id = next_prog_id($pdo, $data['dept_id']);
 
         try {
             $chk = $pdo->prepare("SELECT prog_id FROM programs WHERE prog_id = ?");

@@ -17,54 +17,34 @@ try {
     if (!$data) { header('Location: list.php?msg=Program+not+found.&type=error'); exit; }
 } catch (PDOException $e) { die('Database error: ' . $e->getMessage()); }
 
-// Resolve the program's current school via its department
-// This is the school the department dropdown will be locked to
+// Resolve the locked department and school for display only
 try {
-    $schoolStmt = $pdo->prepare("
-        SELECT s.school_id, s.school_short_name, s.school_full_name
+    $deptStmt = $pdo->prepare("
+        SELECT d.dept_id, d.dept_short_name, d.dept_full_name,
+               s.school_short_name, s.school_full_name
         FROM departments d
         JOIN schools s ON s.school_id = d.school_id
         WHERE d.dept_id = ?
     ");
-    $schoolStmt->execute([$data['dept_id']]);
-    $currentSchool = $schoolStmt->fetch();
-    if (!$currentSchool) { die('Error: Could not resolve school for this program.'); }
-} catch (PDOException $e) { die('Database error: ' . $e->getMessage()); }
-
-// Fetch only the departments that belong to the same school
-// Program can only move to a sibling department (same school)
-try {
-    $deptStmt = $pdo->prepare("
-        SELECT dept_id, dept_short_name, dept_full_name
-        FROM departments
-        WHERE school_id = ?
-        ORDER BY dept_id ASC
-    ");
-    $deptStmt->execute([$currentSchool['school_id']]);
-    $departments = $deptStmt->fetchAll();
+    $deptStmt->execute([$data['dept_id']]);
+    $currentDept = $deptStmt->fetch();
+    if (!$currentDept) { die('Error: Could not resolve department for this program.'); }
 } catch (PDOException $e) { die('Database error: ' . $e->getMessage()); }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $data['prog_full_name']  = trim($_POST['prog_full_name']  ?? '');
     $data['prog_short_name'] = trim($_POST['prog_short_name'] ?? '');
-    $data['dept_id']         = trim($_POST['dept_id']         ?? '');
 
-    if ($data['prog_full_name'] === '')  $errors[] = 'Program Full Name is required.';
-    if ($data['prog_short_name'] === '') $errors[] = 'Program Short Name is required.';
-    if ($data['dept_id'] === '')         $errors[] = 'Please select a Department.';
-
-    // Security: verify submitted dept_id actually belongs to the same school
-    if (!empty($data['dept_id'])) {
-        $allowed_dept_ids = array_column($departments, 'dept_id');
-        if (!in_array($data['dept_id'], $allowed_dept_ids)) {
-            $errors[] = 'The selected department does not belong to this program\'s school.';
-        }
-    }
+    // Full name: letters, spaces, hyphens, apostrophes, ampersands, dots — no digits
+    if ($e = validate_name_field($data['prog_full_name'], 'Program Full Name'))     $errors[] = $e;
+    // Short name: letters only (e.g. ABFINARTS, BSCS)
+    if ($e = validate_letters_only($data['prog_short_name'], 'Program Short Name')) $errors[] = $e;
 
     if (empty($errors)) {
         try {
-            $stmt = $pdo->prepare("UPDATE programs SET prog_full_name=?, prog_short_name=?, dept_id=? WHERE prog_id=?");
-            $stmt->execute([$data['prog_full_name'], $data['prog_short_name'], $data['dept_id'], $id]);
+            // dept_id is NOT updated — locked to the original department at creation
+            $stmt = $pdo->prepare("UPDATE programs SET prog_full_name=?, prog_short_name=? WHERE prog_id=?");
+            $stmt->execute([$data['prog_full_name'], $data['prog_short_name'], $id]);
             header('Location: list.php?msg=Program+updated+successfully.&type=success');
             exit;
         } catch (PDOException $e) { $errors[] = 'Database error: ' . $e->getMessage(); }
@@ -86,42 +66,44 @@ include '../includes/header.php';
 
         <div class="form-row">
             <label>Program ID:</label>
-            <input type="text" value="<?= htmlspecialchars($data['prog_id']) ?>" disabled>
+            <input type="text" value="<?= htmlspecialchars($data['prog_id']) ?>" disabled
+                   style="background:#f4f6f8;color:var(--muted);cursor:not-allowed;">
         </div>
 
         <div class="form-row">
             <label for="prog_full_name">Program Full Name:</label>
             <input type="text" id="prog_full_name" name="prog_full_name"
-                   value="<?= htmlspecialchars($data['prog_full_name']) ?>" maxlength="150">
+                   value="<?= htmlspecialchars($data['prog_full_name']) ?>"
+                   maxlength="150"
+                   pattern="[a-zA-Z\s\-'\.&]+"
+                   title="Letters, spaces, hyphens, apostrophes, dots, and ampersands only — no numbers">
         </div>
 
         <div class="form-row">
             <label for="prog_short_name">Program Short Name:</label>
             <input type="text" id="prog_short_name" name="prog_short_name"
-                   value="<?= htmlspecialchars($data['prog_short_name']) ?>" maxlength="20">
+                   value="<?= htmlspecialchars($data['prog_short_name']) ?>"
+                   maxlength="20"
+                   pattern="[a-zA-Z]+"
+                   title="Letters only — no numbers, spaces, or special characters">
         </div>
 
-        <!-- School is locked — shown as read-only, not a free dropdown -->
+        <!-- Department is locked — program cannot be moved to a different department -->
         <div class="form-row">
-            <label>School:</label>
+            <label>Department:</label>
             <input type="text"
-                   value="<?= htmlspecialchars($currentSchool['school_short_name'] . ' – ' . $currentSchool['school_full_name']) ?>"
+                   value="<?= htmlspecialchars($currentDept['dept_short_name'] . ' – ' . $currentDept['dept_full_name']) ?>"
                    disabled
                    style="background:#f4f6f8;color:var(--muted);cursor:not-allowed;">
         </div>
 
-        <!-- Department dropdown restricted to siblings in the same school -->
+        <!-- School shown for context — also locked -->
         <div class="form-row">
-            <label for="dept_id">Department:</label>
-            <select id="dept_id" name="dept_id">
-                <option value="">-- Select Department --</option>
-                <?php foreach ($departments as $d): ?>
-                    <option value="<?= $d['dept_id'] ?>"
-                        <?= $data['dept_id'] == $d['dept_id'] ? 'selected' : '' ?>>
-                        <?= htmlspecialchars($d['dept_short_name'] . ' – ' . $d['dept_full_name']) ?>
-                    </option>
-                <?php endforeach; ?>
-            </select>
+            <label>School:</label>
+            <input type="text"
+                   value="<?= htmlspecialchars($currentDept['school_short_name'] . ' – ' . $currentDept['school_full_name']) ?>"
+                   disabled
+                   style="background:#f4f6f8;color:var(--muted);cursor:not-allowed;">
         </div>
 
         <div class="form-actions">
