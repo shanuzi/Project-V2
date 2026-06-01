@@ -16,6 +16,7 @@ function is_active($keywords, $current) {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>USJ-R School Management System</title>
     <link rel="stylesheet" href="<?= $base_path ?? '' ?>assets/style.css">
+    <link rel="icon" type="image/png" href="<?= $base_path ?? '' ?>assets/images/favicon.png">
 </head>
 <body>
 

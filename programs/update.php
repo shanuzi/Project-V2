@@ -35,10 +35,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $data['prog_full_name']  = trim($_POST['prog_full_name']  ?? '');
     $data['prog_short_name'] = trim($_POST['prog_short_name'] ?? '');
 
-    // Full name: letters, spaces, hyphens, apostrophes, ampersands, dots — no digits
-    if ($e = validate_name_field($data['prog_full_name'], 'Program Full Name'))     $errors[] = $e;
-    // Short name: letters only (e.g. ABFINARTS, BSCS)
-    if ($e = validate_letters_only($data['prog_short_name'], 'Program Short Name')) $errors[] = $e;
+  
 
     if (empty($errors)) {
         try {

@@ -11,9 +11,8 @@ require_once '../config/db.php';
 $base_path = '../';
 $errors = [];
 
-// Initialize data structure
+// Initialize data structure (no student_id — it is auto-generated)
 $data = [
-    'student_id'          => '',
     'student_first_name'  => '',
     'student_middle_name' => '',
     'student_last_name'   => '',
@@ -31,19 +30,51 @@ try {
     $errors[] = 'Failed to load academic programs: ' . $e->getMessage();
 }
 
+
+function generateNextStudentId(PDO $pdo): int {
+    $year = date('Y'); // use current year dynamically
+    $prefix = (int)($year . '0000');
+    $ceiling = (int)($year . '9999');
+
+    $stmt = $pdo->prepare("
+        SELECT MAX(student_id) AS max_id
+        FROM students
+        WHERE student_id BETWEEN ? AND ?
+    ");
+    $stmt->execute([$prefix + 1, $ceiling]);
+    $row = $stmt->fetch();
+
+    if ($row && $row['max_id'] !== null) {
+        return (int)$row['max_id'] + 1;
+    }
+
+    // No students for this year yet — start at YYYY0001
+    return $prefix + 1;
+}
+
+$generated_id = null;
+try {
+    $generated_id = generateNextStudentId($pdo);
+} catch (PDOException $e) {
+    $errors[] = 'Failed to generate Student ID: ' . $e->getMessage();
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     
-    $data['student_id']          = trim($_POST['student_id'] ?? '');
     $data['student_first_name']  = trim($_POST['student_first_name'] ?? '');
     $data['student_middle_name'] = trim($_POST['student_middle_name'] ?? '');
     $data['student_last_name']   = trim($_POST['student_last_name'] ?? '');
     $data['student_year']        = trim($_POST['student_year'] ?? '');
     $data['prog_id']             = trim($_POST['prog_id'] ?? '');
 
-    /* Validation */
-    if ($data['student_id'] === '' || !ctype_digit($data['student_id'])) {
-        $errors[] = 'Student ID must be a positive integer.';
+    // Re-generate ID on POST in case of a concurrent insertion between page load and submit
+    try {
+        $generated_id = generateNextStudentId($pdo);
+    } catch (PDOException $e) {
+        $errors[] = 'Failed to generate Student ID: ' . $e->getMessage();
     }
+
+
     if ($data['student_first_name'] === '') {
         $errors[] = 'Student First Name is required.';
     }
@@ -61,33 +92,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if (empty($errors)) {
         try {
-            // Correct duplicate verification check against the students table
+            // Duplicate check — guard against race condition
             $chk = $pdo->prepare("SELECT student_id FROM students WHERE student_id = ?");
-            $chk->execute([$data['student_id']]);
+            $chk->execute([$generated_id]);
 
             if ($chk->fetch()) {
-                $errors[] = 'A student with that ID already exists.';
-            } else {
-                // Perform clear, explicit database entry insert operation
-                $sql = "INSERT INTO students (student_id, student_first_name, student_middle_name, student_last_name, student_year, prog_id) 
-                        VALUES (?, ?, ?, ?, ?, ?)";
-                $stmt = $pdo->prepare($sql);
+                // Edge case: ID was taken between generation and insert; bump by 1
+                $generated_id++;
+            }
 
-                // Set explicitly empty strings to NULL values for middle name if not provided
-                $midName = $data['student_middle_name'] === '' ? null : $data['student_middle_name'];
+            $sql = "INSERT INTO students (student_id, student_first_name, student_middle_name, student_last_name, student_year, prog_id) 
+                    VALUES (?, ?, ?, ?, ?, ?)";
+            $stmt = $pdo->prepare($sql);
 
-                if ($stmt->execute([
-                    $data['student_id'],
-                    $data['student_first_name'],
-                    $midName,
-                    $data['student_last_name'],
-                    $data['student_year'],
-                    $data['prog_id']
-                ])) {
-                    // Redirect back to list view of the newly registered student's program
-                    header('Location: list.php?prog_id=' . urlencode($data['prog_id']) . '&msg=Student+added+successfully.&type=success');
-                    exit;
-                }
+            $midName = $data['student_middle_name'] === '' ? null : $data['student_middle_name'];
+
+            if ($stmt->execute([
+                $generated_id,
+                $data['student_first_name'],
+                $midName,
+                $data['student_last_name'],
+                $data['student_year'],
+                $data['prog_id']
+            ])) {
+                header('Location: list.php?prog_id=' . urlencode($data['prog_id']) . '&msg=Student+added+successfully.+ID:+' . $generated_id . '&type=success');
+                exit;
             }
         } catch (PDOException $e) {
             $errors[] = 'Database error: ' . $e->getMessage();
@@ -107,10 +136,14 @@ include '../includes/header.php';
 <div class="form-card">
     <form method="POST" action="create.php<?= $data['prog_id'] !== '' ? '?prog_id=' . urlencode($data['prog_id']) : '' ?>">
 
+        // student id auot gen
         <div class="form-row">
             <label for="student_id">Student ID:</label>
-            <input type="number" id="student_id" name="student_id"
-                value="<?= htmlspecialchars($data['student_id']) ?>" min="1" required>
+            <input type="text" id="student_id" name="student_id"
+                value="<?= htmlspecialchars($generated_id ?? 'Generating…') ?>"
+                readonly
+                style="background:#f4f6f8; color:var(--muted); cursor:not-allowed; font-weight:700; letter-spacing:.04em;"
+                title="Auto-generated — cannot be edited">
         </div>
 
         <div class="form-row">

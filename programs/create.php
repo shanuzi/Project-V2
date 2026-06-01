@@ -14,10 +14,7 @@ $departments = $pdo->query("
     ORDER BY s.school_id, d.dept_id
 ")->fetchAll();
 
-// --- Generate next prog_id based on selected department ---
-// Format: {dept_id} + 3-digit sequence
-// Uses MAX to stay correct even after deletions.
-// e.g. dept 11001: MAX is 11001003 → strip prefix 11001 → sequence 003 → next is 004 → 11001004
+
 function next_prog_id(PDO $pdo, string $dept_id): string {
     $stmt = $pdo->prepare("SELECT MAX(prog_id) FROM programs WHERE dept_id = ?");
     $stmt->execute([$dept_id]);
@@ -47,7 +44,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($data['dept_id'] === '')         $errors[] = 'Please select a Department.';
 
     if (empty($errors)) {
-        // Re-compute at save time using MAX to avoid race conditions and deletion gaps
+        
         $prog_id = next_prog_id($pdo, $data['dept_id']);
 
         try {

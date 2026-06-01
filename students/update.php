@@ -50,12 +50,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $data['prog_id']             = trim($_POST['prog_id']             ?? '');
 
     // Name fields: letters, spaces, hyphens, apostrophes only — no numbers
-    if ($e = validate_person_name($data['student_first_name'], 'First Name', true))          $errors[] = $e;
-    if ($e = validate_person_name($data['student_middle_name'], 'Middle Name', false))       $errors[] = $e;
-    if ($e = validate_person_name($data['student_last_name'], 'Last Name', true))            $errors[] = $e;
-
-    // Year level: integer 1–6 only (also enforced via <select> on the UI)
-    if ($e = validate_integer_range($data['student_year'], 'Year Level', 1, 6))             $errors[] = $e;
 
     if ($data['prog_id'] === '') {
         $errors[] = 'Please select an Academic Program.';
